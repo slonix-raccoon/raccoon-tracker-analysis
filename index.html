@@ -105,6 +105,9 @@
         <option value="task">Task</option>
         <option value="project-task">Project → Task</option>
         <option value="person-project-task">Person → Project → Task</option>
+        <option value="mytask">My Task</option>
+        <option value="project-mytask">Project → My Task</option>
+        <option value="person-mytask">Person → My Task</option>
       </select>
     </div>
     <button id="loadBtn">Load</button>
@@ -116,14 +119,16 @@
 
   <script src="config.js"></script>
   <script>
-    // ── Date defaults ──────────────────────────────────────────────
+    // ── Date defaults + localStorage restore ──────────────────────
     (function initDates() {
       const now = new Date();
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
-      document.getElementById('dateFrom').value = `${y}-${m}-01`;
-      document.getElementById('dateTo').value   = `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
+      document.getElementById('dateFrom').value = localStorage.getItem('rta_dateFrom') || `${y}-${m}-01`;
+      document.getElementById('dateTo').value   = localStorage.getItem('rta_dateTo')   || `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
+      const savedGroupBy = localStorage.getItem('rta_groupBy');
+      if (savedGroupBy) document.getElementById('groupBy').value = savedGroupBy;
     })();
 
     // ── API client ─────────────────────────────────────────────────
@@ -195,6 +200,10 @@
         // Store lookup maps globally for use in grouping
         window._users    = Object.fromEntries(users.map(u => [u.id, u.name]));
         window._projects = Object.fromEntries(projects.map(p => [p.id, p.name]));
+
+        // Restore saved project filter now that options are populated
+        const savedProject = localStorage.getItem('rta_projectFilter');
+        if (savedProject) document.getElementById('projectFilter').value = savedProject;
       } catch (err) {
         document.getElementById('error').textContent = 'Failed to load filters: ' + err.message;
       }
@@ -231,6 +240,10 @@
     function entryPerson(e)  { return (window._users    && window._users[e.userId])    || e.userId    || 'Unknown'; }
     function entryProject(e) { return (window._projects && window._projects[e.projectId]) || e.projectId || '(no project)'; }
     function entryHours(e)   { return parseDuration(e.timeInterval && e.timeInterval.duration); }
+    function entryMyTask(e)  {
+      const match = (e.description || '').match(/\[([A-Z]+-\d+)\]/);
+      return match ? match[1] : '(no ticket)';
+    }
 
     function makeGroups(entries, labelFn, childGroupFn) {
       const map = new Map();
@@ -261,6 +274,17 @@
           items => makeGroups(items, entryProject,
             subItems => makeGroups(subItems, entryTask, null)));
       }
+      if (mode === 'mytask') {
+        return makeGroups(entries, entryMyTask, null);
+      }
+      if (mode === 'project-mytask') {
+        return makeGroups(entries, entryProject,
+          items => makeGroups(items, entryMyTask, null));
+      }
+      if (mode === 'person-mytask') {
+        return makeGroups(entries, entryPerson,
+          items => makeGroups(items, entryMyTask, null));
+      }
       return [];
     }
 
@@ -288,12 +312,13 @@
           entryPerson(e),
           entryProject(e),
           e.description || '(no description)',
+          entryMyTask(e),
           e.billable ? 'Yes' : 'No',
           formatHours(entryHours(e)),
         ].forEach((val, i) => {
           const td = document.createElement('td');
           td.textContent = val;
-          if (i === 7) td.className = 'right'; // Duration column
+          if (i === 8) td.className = 'right'; // Duration column
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -344,7 +369,7 @@
       const tbody = document.createElement('tbody');
 
       if (mode === 'none') {
-        [['Date',''],['Start',''],['End',''],['Person',''],['Project',''],['Description',''],['Billable',''],['Duration','right']]
+        [['Date',''],['Start',''],['End',''],['Person',''],['Project',''],['Description',''],['My Task',''],['Billable',''],['Duration','right']]
           .forEach(([text, cls]) => {
             const th = document.createElement('th');
             th.textContent = text;
@@ -392,6 +417,12 @@
       btn.disabled = true;
       btn.textContent = 'Loading…';
       errorEl.textContent = '';
+
+      // Persist filter selections
+      localStorage.setItem('rta_dateFrom',      document.getElementById('dateFrom').value);
+      localStorage.setItem('rta_dateTo',        document.getElementById('dateTo').value);
+      localStorage.setItem('rta_projectFilter', document.getElementById('projectFilter').value);
+      localStorage.setItem('rta_groupBy',       mode);
 
       try {
         const entries = await fetchEntries();
