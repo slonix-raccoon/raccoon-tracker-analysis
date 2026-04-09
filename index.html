@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Raccoon Tracker Analysis</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      color: #1a1a1a;
+      background: #f7f7f7;
+      margin: 0;
+      padding: 24px;
+    }
+    h1 { font-size: 18px; margin: 0 0 20px; }
+    #filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-end;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    label { font-size: 12px; color: #666; font-weight: 500; }
+    input[type="date"], select {
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 14px;
+      background: #fff;
+    }
+    button#loadBtn {
+      padding: 7px 20px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      align-self: flex-end;
+    }
+    button#loadBtn:disabled { background: #93c5fd; cursor: not-allowed; }
+    #summary { font-weight: 600; margin-bottom: 12px; min-height: 20px; }
+    #error { color: #dc2626; margin-bottom: 12px; min-height: 20px; }
+    #results {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      background: #f3f4f6;
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #555;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    th.right, td.right { text-align: right; }
+    td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; }
+    tr:last-child td { border-bottom: none; }
+    tr.subtotal td { background: #f9fafb; font-weight: 600; }
+    tr.grand-total td {
+      background: #eff6ff;
+      font-weight: 700;
+      border-top: 2px solid #bfdbfe;
+    }
+  </style>
+</head>
+<body>
+  <h1>Raccoon Tracker Analysis</h1>
+
+  <div id="filters">
+    <div class="field">
+      <label for="dateFrom">From</label>
+      <input type="date" id="dateFrom">
+    </div>
+    <div class="field">
+      <label for="dateTo">To</label>
+      <input type="date" id="dateTo">
+    </div>
+    <div class="field">
+      <label for="personFilter">Person</label>
+      <select id="personFilter">
+        <option value="">All</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="projectFilter">Project</label>
+      <select id="projectFilter">
+        <option value="">All</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="groupBy">Group by</label>
+      <select id="groupBy">
+        <option value="task">Task</option>
+        <option value="project-task">Project → Task</option>
+        <option value="person-project-task">Person → Project → Task</option>
+      </select>
+    </div>
+    <button id="loadBtn">Load</button>
+  </div>
+
+  <div id="error"></div>
+  <div id="summary"></div>
+  <div id="results"></div>
+
+  <script src="config.js"></script>
+  <script>
+    // ── Date defaults ──────────────────────────────────────────────
+    (function initDates() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
+      document.getElementById('dateFrom').value = `${y}-${m}-01`;
+      document.getElementById('dateTo').value   = `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
+    })();
+
+    // ── API client ─────────────────────────────────────────────────
+    async function apiFetch(path, params = {}) {
+      const url = new URL(CONFIG.baseUrl + path);
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+      });
+      const res = await fetch(url.toString(), {
+        headers: { 'X-Api-Key': CONFIG.apiKey }
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`API ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
+
+    // ── Duration parser ────────────────────────────────────────────
+    // Parses ISO 8601 duration string → decimal hours.
+    // Handles: "PT45M", "PT1H30M", "PT2H", "PT1H", "PT90M"
+    function parseDuration(iso) {
+      if (!iso) return 0;
+      const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      if (!match) return 0;
+      const h = parseInt(match[1] || '0', 10);
+      const m = parseInt(match[2] || '0', 10);
+      const s = parseInt(match[3] || '0', 10);
+      return h + m / 60 + s / 3600;
+    }
+
+    function formatHours(hours) {
+      const h = Math.floor(hours);
+      const m = Math.round((hours - h) * 60);
+      return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+
+    // ── Dropdowns ──────────────────────────────────────────────────
+    async function loadDropdowns() {
+      try {
+        const wsId = CONFIG.workspaceId;
+        const [users, projects] = await Promise.all([
+          apiFetch(`/workspaces/${wsId}/users`),
+          apiFetch(`/workspaces/${wsId}/projects`),
+        ]);
+
+        const personSel = document.getElementById('personFilter');
+        users
+          .filter(u => u.status === 'ACTIVE')
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .forEach(u => {
+            const opt = document.createElement('option');
+            opt.value = u.id;
+            opt.textContent = u.name;
+            personSel.appendChild(opt);
+          });
+
+        const projectSel = document.getElementById('projectFilter');
+        projects
+          .filter(p => !p.archived)
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.name;
+            projectSel.appendChild(opt);
+          });
+
+        // Store lookup maps globally for use in grouping
+        window._users    = Object.fromEntries(users.map(u => [u.id, u.name]));
+        window._projects = Object.fromEntries(projects.map(p => [p.id, p.name]));
+      } catch (err) {
+        document.getElementById('error').textContent = 'Failed to load filters: ' + err.message;
+      }
+    }
+
+    loadDropdowns();
+
+    // ── Fetch entries ──────────────────────────────────────────────
+    async function fetchEntries() {
+      const from      = document.getElementById('dateFrom').value;
+      const to        = document.getElementById('dateTo').value;
+      const personId  = document.getElementById('personFilter').value;
+      const projectId = document.getElementById('projectFilter').value;
+
+      const params = {
+        start: from + 'T00:00:00Z',
+        end:   to   + 'T23:59:59Z',
+      };
+      if (projectId) params.projectId = projectId;
+
+      const wsId = CONFIG.workspaceId;
+      let entries = await apiFetch(`/workspaces/${wsId}/time-entries`, params);
+
+      // userId filter NOT supported server-side — apply client-side
+      if (personId) {
+        entries = entries.filter(e => e.userId === personId);
+      }
+
+      return entries;
+    }
+
+    // ── Grouping ───────────────────────────────────────────────────
+    function entryTask(e)    { return e.description || '(no description)'; }
+    function entryPerson(e)  { return (window._users    && window._users[e.userId])    || e.userId    || 'Unknown'; }
+    function entryProject(e) { return (window._projects && window._projects[e.projectId]) || e.projectId || '(no project)'; }
+    function entryHours(e)   { return parseDuration(e.timeInterval && e.timeInterval.duration); }
+
+    function makeGroups(entries, labelFn, childGroupFn) {
+      const map = new Map();
+      for (const entry of entries) {
+        const key = labelFn(entry);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(entry);
+      }
+      return Array.from(map.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([label, items]) => ({
+          label,
+          hours: items.reduce((sum, e) => sum + entryHours(e), 0),
+          children: childGroupFn ? childGroupFn(items) : null,
+        }));
+    }
+
+    function groupEntries(entries, mode) {
+      if (mode === 'task') {
+        return makeGroups(entries, entryTask, null);
+      }
+      if (mode === 'project-task') {
+        return makeGroups(entries, entryProject,
+          items => makeGroups(items, entryTask, null));
+      }
+      if (mode === 'person-project-task') {
+        return makeGroups(entries, entryPerson,
+          items => makeGroups(items, entryProject,
+            subItems => makeGroups(subItems, entryTask, null)));
+      }
+      return [];
+    }
+
+    // ── Renderer ───────────────────────────────────────────────────
+    function renderRows(groups, tbody, depth) {
+      for (const group of groups) {
+        const tr = document.createElement('tr');
+        if (group.children) tr.classList.add('subtotal');
+
+        const labelTd = document.createElement('td');
+        labelTd.textContent = group.label;
+        labelTd.style.paddingLeft = (12 + depth * 24) + 'px';
+        tr.appendChild(labelTd);
+
+        const hoursTd = document.createElement('td');
+        hoursTd.className = 'right';
+        hoursTd.textContent = formatHours(group.hours);
+        tr.appendChild(hoursTd);
+
+        tbody.appendChild(tr);
+
+        if (group.children) {
+          renderRows(group.children, tbody, depth + 1);
+        }
+      }
+    }
+
+    function renderResults(entries, mode) {
+      const container = document.getElementById('results');
+      const summaryEl = document.getElementById('summary');
+      container.innerHTML = '';
+
+      if (entries.length === 0) {
+        summaryEl.textContent = '';
+        container.textContent = 'No entries found for the selected filters.';
+        return;
+      }
+
+      const totalHours = entries.reduce((sum, e) => sum + entryHours(e), 0);
+      summaryEl.textContent = `Total: ${formatHours(totalHours)} · ${entries.length} entries`;
+
+      const groups = groupEntries(entries, mode);
+
+      const table = document.createElement('table');
+
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      [['Label', ''], ['Duration', 'right']].forEach(([text, cls]) => {
+        const th = document.createElement('th');
+        th.textContent = text;
+        if (cls) th.className = cls;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      renderRows(groups, tbody, 0);
+
+      // Grand total row
+      const totalTr = document.createElement('tr');
+      totalTr.classList.add('grand-total');
+      const lbl = document.createElement('td');
+      lbl.textContent = 'Grand Total';
+      totalTr.appendChild(lbl);
+      const val = document.createElement('td');
+      val.className = 'right';
+      val.textContent = formatHours(totalHours);
+      totalTr.appendChild(val);
+      tbody.appendChild(totalTr);
+
+      table.appendChild(tbody);
+      container.appendChild(table);
+    }
+
+    // ── Load button ────────────────────────────────────────────────
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      const btn     = document.getElementById('loadBtn');
+      const errorEl = document.getElementById('error');
+      const mode    = document.getElementById('groupBy').value;
+
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      errorEl.textContent = '';
+
+      try {
+        const entries = await fetchEntries();
+        renderResults(entries, mode);
+      } catch (err) {
+        document.getElementById('summary').textContent = '';
+        document.getElementById('results').innerHTML = '';
+        errorEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Load';
+      }
+    });
+  </script>
+</body>
+</html>
