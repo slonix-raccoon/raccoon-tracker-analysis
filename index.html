@@ -241,8 +241,10 @@
     function entryProject(e) { return (window._projects && window._projects[e.projectId]) || e.projectId || '(no project)'; }
     function entryHours(e)   { return parseDuration(e.timeInterval && e.timeInterval.duration); }
     function entryMyTask(e)  {
-      const match = (e.description || '').match(/\[([A-Z]+-\d+)\]/);
-      return match ? match[1] : '(no ticket)';
+      const desc = e.description || '';
+      // Priority: [PROJ-123] → (PROJ-123) → bare PROJ-123
+      const match = desc.match(/\[([A-Z]+-\d+)\]|\(([A-Z]+-\d+)\)|\b([A-Z]+-\d+)\b/);
+      return match ? (match[1] || match[2] || match[3]) : '(no ticket)';
     }
 
     function makeGroups(entries, labelFn, childGroupFn) {
