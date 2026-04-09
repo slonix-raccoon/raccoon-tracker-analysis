@@ -101,6 +101,7 @@
     <div class="field">
       <label for="groupBy">Group by</label>
       <select id="groupBy">
+        <option value="none">None (raw entries)</option>
         <option value="task">Task</option>
         <option value="project-task">Project → Task</option>
         <option value="person-project-task">Person → Project → Task</option>
@@ -263,6 +264,42 @@
       return [];
     }
 
+    // ── Raw renderer (no grouping) ─────────────────────────────────
+    function formatDateTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const date = d.toLocaleDateString('en-CA'); // YYYY-MM-DD
+      const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      return { date, time };
+    }
+
+    function renderRaw(entries, tbody) {
+      const sorted = [...entries].sort((a, b) =>
+        new Date(b.timeInterval.start) - new Date(a.timeInterval.start)
+      );
+      for (const e of sorted) {
+        const start = formatDateTime(e.timeInterval && e.timeInterval.start);
+        const end   = formatDateTime(e.timeInterval && e.timeInterval.end);
+        const tr = document.createElement('tr');
+        [
+          start.date,
+          start.time,
+          end.time,
+          entryPerson(e),
+          entryProject(e),
+          e.description || '(no description)',
+          e.billable ? 'Yes' : 'No',
+          formatHours(entryHours(e)),
+        ].forEach((val, i) => {
+          const td = document.createElement('td');
+          td.textContent = val;
+          if (i === 7) td.className = 'right'; // Duration column
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      }
+    }
+
     // ── Renderer ───────────────────────────────────────────────────
     function renderRows(groups, tbody, depth) {
       for (const group of groups) {
@@ -301,35 +338,46 @@
       const totalHours = entries.reduce((sum, e) => sum + entryHours(e), 0);
       summaryEl.textContent = `Total: ${formatHours(totalHours)} · ${entries.length} entries`;
 
-      const groups = groupEntries(entries, mode);
-
       const table = document.createElement('table');
-
       const thead = document.createElement('thead');
       const headerRow = document.createElement('tr');
-      [['Label', ''], ['Duration', 'right']].forEach(([text, cls]) => {
-        const th = document.createElement('th');
-        th.textContent = text;
-        if (cls) th.className = cls;
-        headerRow.appendChild(th);
-      });
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
-
       const tbody = document.createElement('tbody');
-      renderRows(groups, tbody, 0);
 
-      // Grand total row
-      const totalTr = document.createElement('tr');
-      totalTr.classList.add('grand-total');
-      const lbl = document.createElement('td');
-      lbl.textContent = 'Grand Total';
-      totalTr.appendChild(lbl);
-      const val = document.createElement('td');
-      val.className = 'right';
-      val.textContent = formatHours(totalHours);
-      totalTr.appendChild(val);
-      tbody.appendChild(totalTr);
+      if (mode === 'none') {
+        [['Date',''],['Start',''],['End',''],['Person',''],['Project',''],['Description',''],['Billable',''],['Duration','right']]
+          .forEach(([text, cls]) => {
+            const th = document.createElement('th');
+            th.textContent = text;
+            if (cls) th.className = cls;
+            headerRow.appendChild(th);
+          });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+        renderRaw(entries, tbody);
+      } else {
+        [['Label', ''], ['Duration', 'right']].forEach(([text, cls]) => {
+          const th = document.createElement('th');
+          th.textContent = text;
+          if (cls) th.className = cls;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        renderRows(groupEntries(entries, mode), tbody, 0);
+
+        // Grand total row
+        const totalTr = document.createElement('tr');
+        totalTr.classList.add('grand-total');
+        const lbl = document.createElement('td');
+        lbl.textContent = 'Grand Total';
+        totalTr.appendChild(lbl);
+        const val = document.createElement('td');
+        val.className = 'right';
+        val.textContent = formatHours(totalHours);
+        totalTr.appendChild(val);
+        tbody.appendChild(totalTr);
+      }
 
       table.appendChild(tbody);
       container.appendChild(table);
