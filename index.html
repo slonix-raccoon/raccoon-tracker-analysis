@@ -211,28 +211,36 @@
 
     loadDropdowns();
 
-    // ── Fetch entries ──────────────────────────────────────────────
+    // ── Fetch entries (all pages) ──────────────────────────────────
+    const PAGE_SIZE = 50;
+
     async function fetchEntries() {
       const from      = document.getElementById('dateFrom').value;
       const to        = document.getElementById('dateTo').value;
       const personId  = document.getElementById('personFilter').value;
       const projectId = document.getElementById('projectFilter').value;
 
-      const params = {
+      const baseParams = {
         start: from + 'T00:00:00Z',
         end:   to   + 'T23:59:59Z',
       };
-      if (projectId) params.projectId = projectId;
+      if (projectId) baseParams.projectId = projectId;
 
       const wsId = CONFIG.workspaceId;
-      let entries = await apiFetch(`/workspaces/${wsId}/time-entries`, params);
+      let all = [];
+      let page = 1;
 
-      // userId filter NOT supported server-side — apply client-side
-      if (personId) {
-        entries = entries.filter(e => e.userId === personId);
+      while (true) {
+        const batch = await apiFetch(`/workspaces/${wsId}/time-entries`, { ...baseParams, page });
+        all = all.concat(batch);
+        if (batch.length < PAGE_SIZE) break;
+        page++;
       }
 
-      return entries;
+      // userId filter NOT supported server-side — apply client-side
+      if (personId) all = all.filter(e => e.userId === personId);
+
+      return all;
     }
 
     // ── Grouping ───────────────────────────────────────────────────
